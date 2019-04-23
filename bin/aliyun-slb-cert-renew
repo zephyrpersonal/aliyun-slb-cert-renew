@@ -1,0 +1,81 @@
+#!/usr/bin/env node
+
+require('dotenv').config()
+const { resolve } = require('path')
+
+const Core = require('@alicloud/pop-core')
+const fs = require('fs-extra')
+const { createClient } = require('../lib/client')
+
+const { lb, key, cert } = require('minimist')(process.argv.slice(2))
+
+const { ACCESS_KEY, ACCESS_SECRET, REGION } = process.env
+
+const run = async (opts) => {
+  const resolveFile = (path) => resolve(process.cwd(), path)
+  const client = createClient({ ACCESS_KEY, ACCESS_SECRET, REGION })
+
+  console.log('fetching loadBalancer data')
+  const lbInfo = await client.fetchLoadBalancer({ LoadBalancerId: lb })
+  if (!lbInfo) throw new Error('lb not exist')
+
+  console.log('fetching loadBalancer https listener')
+  const httpsListener = await client.fetchHTTPSListener({ LoadBalancerId: lb, ListenerPort: 443 })
+
+  console.log('fetching server cert binded to loadBalancer https listener')
+  const { ServerCertificates } = await client.fetchServerCert({
+    ServerCertificateId: httpsListener.ServerCertificateId
+  })
+
+  let updatedServerCertificate = null
+
+  if (ServerCertificates.ServerCertificate.length > 0) {
+    console.log('binded cert found')
+    console.log('do renew')
+    updatedServerCertificate = ServerCertificates.ServerCertificate[0]
+  } else {
+    console.log('no cert binded yet')
+    console.log('set a new cert')
+  }
+
+  console.log('server cert start uploading')
+
+  console.log('load cert file')
+  const certString = await fs.readFile(resolveFile(cert), 'utf8')
+
+  console.log('load key file')
+  const keyString = await fs.readFile(resolveFile(key), 'utf8')
+
+  console.log('uploading server cert')
+
+  const uploadedServerCert = await client.uploadServerCert({
+    ServerCertificate: certString.replace(/^\s*\n/gm, ''),
+    PrivateKey: keyString,
+    ServerCertificateName: updatedServerCertificate
+      ? updatedServerCertificate.ServerCertificateName
+      : `cert-${new Date().getTime()}`,
+    ResourceGroupId: updatedServerCertificate ? updatedServerCertificate.ResourceGroupId : 'rg-acfmztp7n2it5ta'
+  })
+
+  console.log('server cert uploaded successfully: ', uploadedServerCert.ServerCertificateId)
+
+  const updatedListener = await client.updateHTTPSListener({
+    ListenerPort: 443,
+    LoadBalancerId: lb,
+    ServerCertificateId: uploadedServerCert.ServerCertificateId
+  })
+
+  console.log('https listener updated successfully: ', updatedListener)
+
+  if (updatedServerCertificate) {
+    console.log('remove old server cert')
+    await client.deleteServerCert({
+      ServerCertificateId: updatedServerCertificate.ServerCertificateId
+    })
+  }
+}
+
+run().catch((e) => {
+  console.error(e)
+  process.exit(1)
+})

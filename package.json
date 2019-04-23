@@ -1,0 +1,15 @@
+{
+  "name": "aliyun-slb-cert-renew",
+  "version": "1.0.0",
+  "main": "index.js",
+  "bin": "bin/aliyun-slb-cert-renew",
+  "repository": "git@github.com:zephyrpersonal/aliyun-slb-cert-renew.git",
+  "author": "zephyr <zephyr.workmail@gmail.com>",
+  "license": "MIT",
+  "dependencies": {
+    "@alicloud/pop-core": "^1.7.6",
+    "dotenv": "^7.0.0",
+    "fs-extra": "^7.0.1",
+    "minimist": "^1.2.0"
+  }
+}
