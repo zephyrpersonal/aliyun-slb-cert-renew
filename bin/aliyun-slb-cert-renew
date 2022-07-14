@@ -7,32 +7,16 @@ const Core = require('@alicloud/pop-core')
 const fs = require('fs-extra')
 const { createClient } = require('../lib/client')
 
-const { lb, key, cert } = require('minimist')(process.argv.slice(2))
+const { lb, key, cert, extraDomain } = require('minimist')(process.argv.slice(2))
 
-const { ACCESS_KEY, ACCESS_SECRET, REGION } = process.env
+const { ACCESS_KEY, ACCESS_SECRET, REGION = 'cn-hangzhou' } = process.env
 
-const run = async (opts) => {
-  const resolveFile = (path) => resolve(process.cwd(), path)
-  const client = createClient({ ACCESS_KEY, ACCESS_SECRET, REGION })
+const resolveFile = (path) => resolve(process.cwd(), path)
 
-  console.log('fetching loadBalancer data')
-  const lbInfo = await client.fetchLoadBalancer({ LoadBalancerId: lb })
-  if (!lbInfo) throw new Error('lb not exist')
-
-  console.log('fetching loadBalancer https listener')
-  const httpsListener = await client.fetchHTTPSListener({ LoadBalancerId: lb, ListenerPort: 443 })
-
-  console.log('fetching server cert binded to loadBalancer https listener')
-  const { ServerCertificates } = await client.fetchServerCert({
-    ServerCertificateId: httpsListener.ServerCertificateId
-  })
-
-  let updatedServerCertificate = null
-
-  if (ServerCertificates.ServerCertificate.length > 0) {
+const updateCert = async (client, updatedServerCertificate, cert, key) => {
+  if (updatedServerCertificate) {
     console.log('binded cert found')
     console.log('do renew')
-    updatedServerCertificate = ServerCertificates.ServerCertificate[0]
   } else {
     console.log('no cert binded yet')
     console.log('set a new cert')
@@ -40,7 +24,6 @@ const run = async (opts) => {
 
   console.log('server cert start uploading')
 
-  console.log('load cert file')
   const certString = await fs.readFile(resolveFile(cert), 'utf8')
 
   console.log('load key file')
@@ -59,18 +42,65 @@ const run = async (opts) => {
 
   console.log('server cert uploaded successfully: ', uploadedServerCert.ServerCertificateId)
 
+  return uploadedServerCert.ServerCertificateId
+}
+
+const run = async (opts) => {
+  const client = createClient({ ACCESS_KEY, ACCESS_SECRET, REGION })
+
+  console.log('fetching loadBalancer data')
+  const lbInfo = await client.fetchLoadBalancer({ LoadBalancerId: lb })
+  if (!lbInfo) throw new Error('lb not exist')
+
+  console.log('fetching loadBalancer https listener')
+  const httpsListener = await client.fetchHTTPSListener({ LoadBalancerId: lb, ListenerPort: 443 })
+
+  if (extraDomain) {
+    const domain = httpsListener.DomainExtensions?.DomainExtension?.find((domain) => domain.Domain === extraDomain)
+    const { ServerCertificates } = await client.fetchServerCert({
+      ServerCertificateId: domain.ServerCertificateId
+    })
+    console.log(ServerCertificates)
+
+    const newCertId = await updateCert(client, ServerCertificates.ServerCertificate[0], cert, key)
+
+    const updatedDomain = await client.updateExtraDomain({
+      ServerCertificateId: newCertId,
+      DomainExtensionId: domain.DomainExtensionId,
+      RegionId: REGION
+    })
+
+    console.log('extra domain updated successfully: ', updatedDomain)
+
+    if (ServerCertificates.ServerCertificate[0]) {
+      console.log('remove old server cert')
+      await client.deleteServerCert({
+        ServerCertificateId: ServerCertificates.ServerCertificate[0].ServerCertificateId
+      })
+    }
+
+    return
+  }
+
+  console.log('fetching server cert binded to loadBalancer https listener')
+  const { ServerCertificates } = await client.fetchServerCert({
+    ServerCertificateId: httpsListener.ServerCertificateId
+  })
+
+  const newCertId = await updateCert(client, ServerCertificates.ServerCertificate[0], cert, key)
+
   const updatedListener = await client.updateHTTPSListener({
     ListenerPort: 443,
     LoadBalancerId: lb,
-    ServerCertificateId: uploadedServerCert.ServerCertificateId
+    ServerCertificateId: newCertId
   })
 
   console.log('https listener updated successfully: ', updatedListener)
 
-  if (updatedServerCertificate) {
+  if (ServerCertificates.ServerCertificate[0]) {
     console.log('remove old server cert')
     await client.deleteServerCert({
-      ServerCertificateId: updatedServerCertificate.ServerCertificateId
+      ServerCertificateId: ServerCertificates.ServerCertificate[0].ServerCertificateId
     })
   }
 }
